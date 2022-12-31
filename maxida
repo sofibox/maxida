@@ -1,0 +1,1106 @@
+#!/bin/bash
+# ==================================================
+_APP_SPECIFIC_NAME="Directadmin CLI"
+_APP_VERSION="0.1"
+_APP_STATUS="alpha"
+_APP_INFO="${_APP_SPECIFIC_NAME} (dacli) is bash script to manage Directadmin server"
+_APP_VERSION_STATUS="${_APP_VERSION}-${_APP_STATUS}"
+_AUTHOR="Author: Arafat Ali | Email: arafat@sofibox.com | (C) 2019-2021"
+# ====================================================
+
+usage() {
+  local usage_file
+  usage_file="${SCRIPT_PATH}/readme.txt"
+  if [ -f "${usage_file}" ]; then
+    cat "${SCRIPT_PATH}/readme.txt"
+    echo ""
+  else
+    echo "Error, the usage file ${usage_file} does not exist."
+    exit 1
+  fi
+}
+
+traps() {
+  local clean_function
+  clean_function="$1"
+  shift
+  for sig; do
+    trap "${clean_function} ${sig}" "${sig}"
+  done
+}
+# validate type <data1> <data2>
+# validate domain "domain.com"
+# validate number_greater_than 1 2
+validate() {
+  local argnum validate_type data1 data2 data3
+  argnum="$#"
+  validate_type="$1"
+
+  if [ ${argnum} -eq 0 ]; then
+    echo "[${SCRIPT_NAME}]: $(msg red)Error, required at least 1 argument when calling function ${FUNCNAME[0]}$(msg end)"
+    exit 1
+  fi
+
+  short_opts=""
+  long_opts="data1:,d1:,data2:,d2:,data3:,d3:"
+  options=$(getopt -o "${short_opts}" --long "${long_opts}" -n "${FUNCNAME[0]} in ${SCRIPT_NAME}" -- "$@")
+  retval=$?
+  if [ "${retval}" != 0 ]; then
+    echo "[${SCRIPT_NAME}]: $(msg red)Error, ${options}$(msg end)"
+    exit 1
+  fi
+  eval set -- "${options}"
+
+  data1=""
+  data2=""
+  data3=""
+  while true; do
+    case "$1" in
+    --data1 | --d1)
+      data1="$2"
+      shift 2
+      ;;
+    --data2 | --d2)
+      data2="$2"
+      shift 2
+      ;;
+    --data3 | --d3)
+      data3="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+    esac
+  done
+  if [[ "${validate_type}" == "maintenance_status" || "${validate_type}" == "maintenance-status" ]]; then
+    local maintenance_status
+    maintenance_status="${data1}"
+    if [[ "${maintenance_status^^}" == +(OFFLINE|ONLINE|OFF|ON|0|1) ]]; then
+      return 0
+    else
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, invalid maintenance status [ ${maintenance_status} ]$(msg end)"
+      return 1
+    fi
+  elif [[ "${validate_type}" == "da_user" || "${validate_type}" == "da-user" ]]; then
+    local da_user check_da_user
+    da_user="${data1}"
+    check_da_user="$(basename "$(find "${USER_LIST_PATH}" -name "${set_user}" -type d | tail -n 1)")"
+    if [[ -n "${check_da_user}" ]]; then
+      return 0
+    else
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, user [ ${da_user} ] does not exist in directadmin system!$(msg end)"
+      exit 1
+    fi
+  elif [[ "${validate_type}" == "domain_owner" || "${validate_type}" == "domain-owner" ]]; then
+    local domain_owner
+    domain_owner="${data1}"
+    readarray -t web_domains <<<"$(grep -w "${domain_owner}" "${DOMAIN_OWNER_FILE}")"
+    if [ -n "${web_domains[*]}" ]; then
+      return 0
+    else
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, domain owner [ ${domain_owner} ] does not exist!$(msg end)"
+      exit 1
+    fi
+  # validate da-user-domain --data1 "${set_user}:${set_domain}"
+  elif [[ "${validate_type}" == "da-user-domain" || "${validate_type}" == "da-user-domain" ]]; then
+    local da_user_domain da_user da_domain has_domain
+    da_user_domain="${data1}"
+    da_user="$(echo "${da_user_domain}" | awk -F':' '{ print $1 }')"
+    da_domain="$(echo "${da_user_domain}" | awk -F':' '{ print $2 }')"
+    readarray -t web_domains <<<"$(cat "/usr/local/directadmin/data/users/${da_user}/domains.list")"
+    has_domain=$(echo "${web_domains[@]}" | grep -w "${da_domain}")
+    if [ -n "${has_domain}" ]; then
+      return 0
+    else
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, invalid domain or the domain ${da_domain} does not belong to user [${da_user}]$(msg end)"
+      exit 1
+    fi
+  else
+    echo "[${SCRIPT_NAME}]: $(msg red)Error, invalid validation type [ ${validate_type} ]!$(msg end)"
+    exit 1
+  fi
+}
+
+get_status_message() {
+  local retval
+  retval="$1"
+  if [[ "${retval}" -eq 0 ]]; then
+    echo " [ OK ]"
+  else
+    echo " [ FAILED ]"
+    exit 1
+  fi
+}
+
+msg() {
+  local mode="$1"
+  shift
+  # Set the foreground colour using ANSI escape
+  # If first argument is color then use mode as color
+  # Enable all cases matching for the following regular expression
+  #shopt -s nocasematch
+  if [[ "${mode^^}" == +(BLACK|RED|GREEN|YELLOW|BLUE|MAGENTA|CYAN) ]]; then
+    if ! [[ ${mode} =~ ^[0-9]$ ]]; then
+      case $(echo "${mode}" | tr '[:upper:]' '[:lower:]') in
+      black) mode=0 ;;
+      red) mode=1 ;;
+      green) mode=2 ;;
+      yellow) mode=3 ;;
+      blue) mode=4 ;;
+      magenta) mode=5 ;;
+      cyan) mode=6 ;;
+      end)
+        tput sgr0
+        return 0
+        ;;
+      white | *) mode=7 ;; # white or invalid color
+      esac
+    fi
+    tput setaf ${mode}
+    # Turn off all cases matching
+    #shopt -u nocasematch
+  elif [[ "${mode}" == "newline" || "${mode}" == "line" ]]; then
+    local count=$1 str=""
+    if [[ -z "${count}" || "${count}" -eq 0 || "${count}" -eq 1 ]]; then
+      return 0
+    fi
+    for ((i = 1; i <= count - 1; i++)); do
+      str="${str}\n"
+    done
+    if [ "$$" -eq "${BASHPID}" ]; then
+      for ((i = 1; i <= count - 2; i++)); do
+        str="${str}\n"
+      done
+      echo -e "${str}"
+    else
+      for ((i = 1; i <= count - 1; i++)); do
+        str="${str}\n"
+      done
+      # Using -e option here will not work if call inside string such as echo.
+      echo "${str}"
+    fi
+  elif [[ "${mode}" == "newtab" || "${mode}" == "tab" ]]; then
+    local count=$1 str=""
+    if [[ -z "${count}" || "${count}" -eq 0 || "${count}" -eq 1 ]]; then
+      return 0
+    fi
+
+    if [ "$$" -eq "${BASHPID}" ]; then
+      for ((i = 1; i <= count - 2; i++)); do
+        str="${str}\t"
+      done
+      echo -e "${str}"
+    else
+      for ((i = 1; i <= count - 1; i++)); do
+        str="${str}\t"
+      done
+      # Using -e option here will not work if call inside string such as echo.
+      echo "${str}"
+    fi
+  elif [[ "${mode}" == "-c" || "${mode}" == "-f" || "${mode}" == "--color" || "${mode}" == "--foreground" ]]; then
+    local color=$1
+    if ! [[ $color =~ ^[0-9]$ ]]; then
+      case $(echo "${color}" | tr '[:upper:]' '[:lower:]') in
+      black) color=0 ;;
+      red) color=1 ;;
+      green) color=2 ;;
+      yellow) color=3 ;;
+      blue) color=4 ;;
+      magenta) color=5 ;;
+      cyan) color=6 ;;
+      end)
+        tput sgr0
+        return 0
+        ;;
+      white | *) color=7 ;; # white or invalid color
+      esac
+    fi
+    tput setaf ${color}
+  # Set the background colour using ANSI escape
+  elif [[ "${mode}" == "-b" || "${mode}" == "--background" ]]; then
+    local color=$1
+    if ! [[ $color =~ ^[0-9]$ ]]; then
+
+      case $(echo "${color}" | tr '[:upper:]' '[:lower:]') in
+      black) color=0 ;;
+      red) color=1 ;;
+      green) color=2 ;;
+      yellow) color=3 ;;
+      blue) color=4 ;;
+      magenta) color=5 ;;
+      cyan) color=6 ;;
+      end)
+        tput sgr0
+        return 0
+        ;;
+      white | *) color=7 ;; # white or invalid color
+      esac
+    fi
+    tput setab ${color}
+
+  elif [[ ${mode} == +(bold|dim|invi|blink|reverse|uline|underline|xuline|focus|standout|xfocus|bell|alert|clr|end) ]]; then
+    case $(echo "${mode}" | tr '[:upper:]' '[:lower:]') in
+    bold) mode="bold" ;;
+    dim) mode="dim" ;;
+    invi) mode="invis" ;;
+    blink) mode="blink" ;;
+    reverse) mode="rev" ;;
+    uline | underline) mode="smul" ;;
+    xuline) mode="rmul" ;;
+    focus | standout) mode="smso" ;;
+    xfocus) mode="rmso" ;;
+    bell | alert) mode="bel" ;;
+    clr | end) mode="sgr0" ;;
+    *)
+      echo "Error, invalid argument supplied for mode: ${mode}!"
+      exit 1
+      ;;
+    esac
+    tput "${mode}"
+    shopt -u nocasematch
+  # Note: Not all modes work for every terminal especially, bold, dim, invi, blink
+  elif [[ "${mode}" == "-m" || "${mode}" == "--mode" ]]; then
+    local mode=$1
+    case $(echo "${mode}" | tr '[:upper:]' '[:lower:]') in
+    bold) mode="bold" ;;
+    dim) mode="dim" ;;
+    invi) mode="invis" ;;
+    blink) mode="blink" ;;
+    reverse) mode="rev" ;;
+    uline | underline) mode="smul" ;;
+    xuline) mode="rmul" ;;
+    focus | standout) mode="smso" ;;
+    xfocus) mode="rmso" ;;
+    bell | alert) mode="bel" ;;
+    clr | end) mode="sgr0" ;;
+    *)
+      echo "Error, invalid argument supplied for mode: ${mode}!"
+      exit 1
+      ;;
+    esac
+
+    tput "${mode}"
+  elif [[ "${mode}" == "-x" || "${mode}" == "x" || "${mode}" == "end" ]]; then
+    tput sgr0
+  fi
+}
+
+check_path() {
+  local paths
+  paths="$*"
+  for path in ${paths}; do
+    if [ -f "${path}" ]; then
+      :
+      # echo "[${SCRIPT_NAME}]: $(msg green)OK, the file path [ ${path} ] exists$(msg end)"
+    elif [ -d "${path}" ]; then
+      :
+      #echo "[${SCRIPT_NAME}]: $(msg green)OK, the directory path [ ${path} ] exists$(msg end)"
+    elif [ -L "${path}" ]; then
+      :
+      #echo "[${SCRIPT_NAME}]: $(msg green)OK, the symlink path [ ${path} ] exists$(msg end)"
+    elif [ -S "${path}" ]; then
+      :
+      #echo "[${SCRIPT_NAME}]: $(msg green)OK, the socket path [ ${path} ] exists$(msg end)"
+    else
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, the path [ ${path} ] does not exist!$(msg end)"
+      exit 1
+    fi
+  done
+}
+
+# Directadmin debug exit trap
+da_debug_exit() {
+  # echo "Trapped: $1"
+  ((CTRL_C_COUNT++))
+  if [[ $CTRL_C_COUNT == 1 ]]; then
+    local signal
+    signal="$1"
+    echo ""
+    if [ "${signal}" == "INT" ]; then
+      echo "[${SCRIPT_NAME}]: *** Directadmin debug mode has been terminated by user [ ${USER} ]! ***"
+    fi
+    echo "[${SCRIPT_NAME}]: Starting directadmin in a normal mode ..."
+    systemctl restart directadmin
+    echo ""
+    echo "                             **END DEBUG**                        "
+    echo "=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~"
+    echo ""
+    echo "[${SCRIPT_NAME}]: Directadmin running status is: $(systemctl is-active directadmin)"
+  fi
+  # clean exit
+  exit 1
+}
+
+_custombuild() {
+  local action
+  shift
+  action="$1"
+  if [[ "${action}" == "rewrite_confs" || "${action}" == "rebuild_confs" ]]; then
+    ${DA_CB_BIN} rewrite_confs
+  else
+    echo "Invalid action ${action}"
+  fi
+}
+
+_apache() {
+  local action
+  shift
+  action="$1"
+  common_file="$2"
+  if [[ "${action}" == "edit-file" || "${action}" == "editfile" ]]; then
+    if [ "${common_file}" == "httpd-alias.conf" ]; then
+      nano -c "/usr/local/directadmin/custombuild/custom/ap2/conf/extra/httpd-alias.conf"
+    fi
+  else
+    echo "Invalid action ${action}"
+  fi
+}
+
+nginx() {
+  :
+}
+
+modsecurity() {
+  :
+}
+_directadmin() {
+  local action
+  shift
+  action="$1"
+
+  if [ "${action}" == "debug" ]; then
+    traps da_debug_exit INT
+    killall -9 directadmin
+    if [ -n "${OUTPUT}" ]; then
+      echo ""
+      echo "=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~"
+      echo "                            **STARTING DIRECTADMIN DEBUG MODE**                       "
+      echo ""
+      echo "Running directadmin debug mode with filtered output ..."
+      echo "FILTERED OUTPUT:"
+      echo "${OUTPUT}"
+      echo ""
+      echo "Press CTRL+C to exit debug mode"
+      echo ""
+      ${DA_BIN} "b${DEBUG_LEVEL}" | grep "${OUTPUT}"
+    else
+      echo "=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~"
+      echo "                            **STARTING DIRECTADMIN DEBUG MODE**                       "
+      echo ""
+      echo "Running directadmin debug mode with full output ..."
+      echo ""
+      echo "Press CTRL+C to exit debug mode"
+      echo ""
+      ${DA_BIN} "b${DEBUG_LEVEL}"
+    fi
+  elif [[ "${action}" == "editconf" || "${action}" == "edit-config" || "${action}" == "edit-conf" ]]; then
+    nano -c "${DA_CONF}"
+  elif [ "${action}" == "restart" ]; then
+    echo "Restarting directadmin ..."
+    systemctl restart directadmin
+  elif [ "${action}" == "set" ]; then
+    local conf_val conf val
+    shift
+    conf_val=$1
+    conf=$(echo "${conf_val}" | awk -F'=' '{ print $1 }')
+    val=$(echo "${conf_val}" | awk -F'=' '{ print $2 }')
+
+    # If value is empty then assume it is the second argument
+    if [ -z "${val}" ]; then
+      val="$2"
+    fi
+
+    echo "[${SCRIPT_NAME}]: Setting Directadmin config ${conf}=${val} ..."
+    "${DA_BIN}" set "${conf}" "${val}" restart
+  elif [ "${action}" == "get" ]; then
+    shift
+    local conf res
+    conf="$1"
+    echo "[${SCRIPT_NAME}]: Getting Directadmin config value of ${conf} ..."
+    res=$("${DA_BIN}" "c" | grep "^${conf}=")
+    if [[ -n "${res}" ]]; then
+      echo "${res}"
+    else
+      echo "[${SCRIPT_NAME}]: No config file for ${conf} is found in directadmin.conf"
+    fi
+  elif [[ "${action}" == "show-all-hook-log" || "${action}" == "show-hook-log"  || "${action}" == "show-hookscript-log"  ]]; then
+    tail -n 25 -F "/usr/local/directadmin/scripts/custom/aa_hook_scripts/all_hook_scripts.log"
+  else
+    echo "Invalid action ${action}"
+  fi
+}
+
+# Usage:
+# dacli maintain-web --set-domain abc.com --set-status offline
+# dacli maintain-web --set-user user1 --set-status online
+# dacli maintain-web --set-status offline (set all web to offline)
+function maintain_web() {
+  local list_domains set_user set_domain set_status da_user
+  # The user that we want to set (this is optional) but required of --set-domain is not supplied
+  set_user="${SET_USER}"
+  # The domain that we want to set (this is optional) but required if --set-user is not supplied
+  set_domain="${SET_DOMAIN}"
+  # This is the status we want (offline or online) this is required
+  set_status="${SET_STATUS}"
+
+  # Make sure set_status is not empty or does not contain invalid status
+  if [[ -z "${set_status}" ]]; then
+    echo "$(msg red)[${SCRIPT_NAME}]: Error, required an option of --set-status$(msg end)"
+    exit 1
+  else
+    # Validate the status value. They must contain only these values
+    if [[ "${set_status^^}" != +(OFFLINE|ONLINE|OFF|ON|0|1) ]]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, invalid maintenance status [ ${set_status} ]$(msg end)"
+      exit 1
+    fi
+  fi
+
+  # If --set-user is supplied, we validate this user whether it exists in directadmin system
+  if [[ -n "${set_user}" ]]; then
+    #echo "User is supplied"
+    local check_da_user
+    check_da_user="$(basename "$(find "${USER_LIST_PATH}" -name "${set_user}" -type d | tail -n 1)")"
+    if [[ -z "${check_da_user}" ]]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, the user [ ${set_user} ] does not exist in directadmin system!$(msg end)"
+      exit 1
+    fi
+
+    if [ -f "/usr/local/directadmin/data/users/${set_user}/domains.list" ]; then
+      readarray -t list_domains <<<"$(cat "/usr/local/directadmin/data/users/${set_user}/domains.list")"
+      if [ -z "${list_domains[*]}" ]; then
+        echo "[${SCRIPT_NAME}]: $(msg red)Error, user [${set_user}] does not have any domains$(msg end)"
+        exit 1
+      else
+        :
+        # OK
+      fi
+    else
+      echo "$(msg red)[${SCRIPT_NAME}]: Error, the user [ ${set_user} ] does not have domain list file$(msg end)"
+      exit 1
+    fi
+  fi
+
+  # If --set-domain is supplied, we have 2 conditions:
+  # 1) If --set-user is supplied, we validate whether the domain is owned by that user
+  # 2) If --set-user is not supplied, we validate whether the domain exists in the domainowners (global file)
+  if [ -n "${set_domain}" ]; then
+    if [ -n "${set_user}" ]; then
+      #echo "Domain and user is supplied"
+      if [ -f "/usr/local/directadmin/data/users/${set_user}/domains.list" ]; then
+        local has_domain
+        readarray -t list_domains <<<"$(cat "/usr/local/directadmin/data/users/${set_user}/domains.list")"
+        has_domain=$(echo "${list_domains[@]}" | grep -w "${set_domain}")
+        if [ -z "${has_domain}" ]; then
+          echo "[${SCRIPT_NAME}]: $(msg red)Error, invalid domain or the domain ${set_domain} does not belong to user [${set_user}]$(msg end)"
+          exit 1
+        else
+          :
+          # OK
+        fi
+      else
+        echo "$(msg red)[${SCRIPT_NAME}]: Error, the user [ ${set_user} ] does not have domain list file$(msg end)"
+        exit 1
+      fi
+    else
+      #echo "Domain supplied and user is not supplied (auto supply user)"
+      # local list_domain_owner
+      # validate domain-owner --data1 "${set_domain}"
+      readarray -t list_domains <<<"$(grep -w "${set_domain}" "${DOMAIN_OWNER_FILE}" | cut -d ":" -f 1)"
+      set_user="$(grep -w "${set_domain}" "${DOMAIN_OWNER_FILE}" | cut -d ":" -f 2 | sed 's/ //g')"
+      if [ -z "${list_domains[*]}" ]; then
+        echo "[${SCRIPT_NAME}]: $(msg red)Error, the domain [ ${set_domain} ] does not exist in domainowners file!$(msg end)"
+        exit 1
+      else
+        :
+        # echo "list_domain: ${list_domain}"
+      fi
+    fi
+  fi
+
+  if [[ -z "${set_user}" && -z "${set_domain}" ]]; then
+
+    #while IFS=":" read -r list_domain list_user; do
+    #  list_user="$(echo "${list_user}" | xargs)"
+    #  echo "${list_domain}:${list_user}"
+    #done <${DOMAIN_OWNER_FILE}
+
+    #readarray -t list_domains <<<"$(cut -d ":" -f 1 "${DOMAIN_OWNER_FILE}" )"
+    #readaarray -t list_users <<<"$(cut -d ":" -f 2 "${DOMAIN_OWNER_FILE}" | sed 's/ //g')"
+
+    :
+  fi
+  #echo "set_user: ${set_user}"
+  #echo "set_domain: ${set_domain}"
+  #echo "set_status: ${set_status}"
+  #echo "list_domains: ${list_domains[*]}"
+
+  if [[ "${set_status^^}" == "OFFLINE" || "${set_status^^}" == "OFF" || "${set_status^^}" == "0" ]]; then
+    local set_status custom_web_httpd custom_web_httpd_backup maintenance_html retval list_user list_user
+    set_status="offline"
+    #echo "Set_status offline triggered"
+    # Only use this if set_user and set_domain are not supplied
+    if [[ -z "${set_user}" && -z "${set_domain}" ]]; then
+      #echo "Domain and user are not supplied"
+      while IFS=":" read -r list_domain list_user; do
+        list_user="$(echo "${list_user}" | xargs)"
+        echo "Turning off for website ${list_domain} [${list_user}] into maintenance mode ..."
+
+        #echo "Web_DOMAIN is: ${list_domain}"
+        #echo ""
+
+        # This is custom web httpd path
+        custom_web_httpd="/usr/local/directadmin/data/users/${list_user}/domains/${list_domain}.cust_httpd"
+        # This is custom web httpd backup path
+        custom_web_httpd_backup="/usr/local/directadmin/data/users/${list_user}/domains/${list_domain}.cust_httpd.backup"
+        # This is the maintenance page
+        maintenance_html="/home/${list_user}/domains/${list_domain}/public_html/maintenance.html"
+        # If the custom_web_httpd file exist we backup it first
+        if [ -f "${custom_web_httpd}" ]; then
+          echo "Checking whether custom httpd file contains maintenance string ..."
+          grep -wq "#!# Start maintenance mode by" "${custom_web_httpd}"
+          retval=$?
+        else
+          retval=1
+        fi
+        # Then we check if the custom httpd contains the maintenance string
+
+        if [ "${retval}" -eq 0 ]; then
+          echo "$(msg yellow)[Skipped] The website ${list_domain} [${list_user}] is already in maintenance mode$(msg end)"
+        else
+          if [ -s "${custom_web_httpd}" ]; then
+            echo -n "Found non empty custom httpd file ${custom_web_httpd}. Performing backup ..."
+            cp -f "${custom_web_httpd}" "${custom_web_httpd_backup}"
+            get_status_message "$?"
+          fi
+          echo -n "Writing maintenance mode config into ${custom_web_httpd} ..."
+          {
+            echo "#!# Start maintenance mode by ${SCRIPT_NAME}"
+            echo "<IfModule mod_rewrite.c>"
+            echo "RewriteEngine on"
+            echo "RewriteCond %{REQUEST_URI} !/maintenance.html\$ [NC]"
+            echo "RewriteRule .* /maintenance.html [R=302,L]"
+            echo "<IfModule mod_headers.c>"
+            echo "Header Always Set Cache-Control \"max-age=0, no-store\""
+            echo "Header Always Set Retry-After \"60\""
+            echo "</IfModule>"
+            echo "</IfModule>"
+            echo "#!# End maintenance mode by ${SCRIPT_NAME}"
+          } >"${custom_web_httpd}"
+          get_status_message "$?"
+
+          echo -n "Writing maintenance page html into ${maintenance_html}..."
+          {
+            echo "<!DOCTYPE html>"
+            echo "<html>"
+            echo "   <!--"
+            echo "    This is an auto generated maintenance page by ${SCRIPT_NAME} - script created by Arafat Ali"
+            echo "    -->"
+            echo "    <head>"
+            echo "        <meta http-equiv=\"Refresh\" content=\"5; url='http://${list_domain}'\" />"
+            echo "        <title>${list_domain}-Website Maintenance</title>"
+            echo "        <style>"
+            echo "            body { text-align: center; padding: 150px; }"
+            echo "            h1 { font-size: 50px; }"
+            echo "            body { font: 20px Helvetica, sans-serif; color: #333; }"
+            echo "            article { display: block; text-align: left; width: 650px; margin: 0 auto; }"
+            echo "            a { color: #dc8100; text-decoration: none; }"
+            echo "            a:hover { color: #333; text-decoration: none; }"
+            echo "        </style>"
+            echo "    </head>"
+            echo "<body>"
+            echo "<article>"
+            echo "    <h1>We&rsquo;ll be back soon!</h1>"
+            echo "    <div>"
+            echo "    <p>Sorry for the inconvenience but we&rsquo;re performing site maintenance at the moment. If you need to you can always <a href=\"mailto:webmaster@${list_domain}\">contact us</a>, otherwise <strong><a href=\"http://${list_domain}\">${list_domain}</a></strong> will be online shortly!</p>"
+            echo "    <p>&mdash; The Team</p>"
+            echo "    </div>"
+            echo "</article>"
+            echo "</body>"
+            echo "</html>"
+          } >"${maintenance_html}"
+          get_status_message "$?"
+          chmod 644 "${maintenance_html}"
+          chown "${list_user}":"${list_user}" "${maintenance_html}"
+
+        fi
+        echo ""
+      done <${DOMAIN_OWNER_FILE}
+      echo -n "Rewriting virtual host config ... (this may take sometimes)"
+      ${DA_CB_BIN} rewrite_confs &>/dev/null
+      get_status_message "$?"
+    else
+
+      for web_domain in "${list_domains[@]}"; do
+        echo "Turning off website ${web_domain} [${set_user}] into maintenance mode ..."
+        #echo "Web_DOMAIN is: ${web_domain}"
+        #echo ""
+        # This is custom web httpd path
+        custom_web_httpd="/usr/local/directadmin/data/users/${set_user}/domains/${web_domain}.cust_httpd"
+        # This is custom web httpd backup path
+        custom_web_httpd_backup="/usr/local/directadmin/data/users/${set_user}/domains/${web_domain}.cust_httpd.backup"
+        # This is a maintenance page
+        maintenance_html="/home/${set_user}/domains/${web_domain}/public_html/maintenance.html"
+
+        # If the custom_web_httpd file exist we backup it first
+        if [ -f "${custom_web_httpd}" ]; then
+          echo "Checking whether custom httpd file contains maintenance string ..."
+          grep -wq "#!# Start maintenance mode by" "${custom_web_httpd}"
+          retval=$?
+        else
+          retval=1
+        fi
+        # Then we check if the custom httpd contains the maintenance string
+        if [ "${retval}" -eq 0 ]; then
+          echo "$(msg yellow)[Skipped] The website ${web_domain} [${set_user}] is already in maintenance mode$(msg end)"
+        else
+          if [ -s "${custom_web_httpd}" ]; then
+            echo -n "Found non empty custom httpd file ${custom_web_httpd}. Performing backup ..."
+            cp -f "${custom_web_httpd}" "${custom_web_httpd_backup}"
+            get_status_message "$?"
+          fi
+
+          echo -n "Writing maintenance mode config into ${custom_web_httpd} ..."
+          {
+            echo "#!# Start maintenance mode by ${SCRIPT_NAME}"
+            echo "<IfModule mod_rewrite.c>"
+            echo "RewriteEngine on"
+            echo "RewriteCond %{REQUEST_URI} !/maintenance.html\$ [NC]"
+            echo "RewriteRule .* /maintenance.html [R=302,L]"
+            echo "<IfModule mod_headers.c>"
+            echo "Header Always Set Cache-Control \"max-age=0, no-store\""
+            echo "Header Always Set Retry-After \"60\""
+            echo "</IfModule>"
+            echo "</IfModule>"
+            echo "#!# End maintenance mode by ${SCRIPT_NAME}"
+          } >"${custom_web_httpd}"
+          get_status_message "$?"
+
+          echo -n "Writing maintenance page html into ${maintenance_html}"
+
+          {
+            echo "<!DOCTYPE html>"
+            echo "<html>"
+            echo "   <!--"
+            echo "    This is an auto generated maintenance page by ${SCRIPT_NAME} - script created by Arafat Ali"
+            echo "    -->"
+            echo "    <head>"
+            echo "        <meta http-equiv=\"Refresh\" content=\"5; url='http://${web_domain}'\" />"
+            echo "        <title>${web_domain}-Website Maintenance</title>"
+            echo "        <style>"
+            echo "            body { text-align: center; padding: 150px; }"
+            echo "            h1 { font-size: 50px; }"
+            echo "            body { font: 20px Helvetica, sans-serif; color: #333; }"
+            echo "            article { display: block; text-align: left; width: 650px; margin: 0 auto; }"
+            echo "            a { color: #dc8100; text-decoration: none; }"
+            echo "            a:hover { color: #333; text-decoration: none; }"
+            echo "        </style>"
+            echo "    </head>"
+            echo "<body>"
+            echo "<article>"
+            echo "    <h1>We&rsquo;ll be back soon!</h1>"
+            echo "    <div>"
+            echo "    <p>Sorry for the inconvenience but we&rsquo;re performing site maintenance at the moment. If you need to you can always <a href=\"mailto:webmaster@${list_domain}\">contact us</a>, otherwise <strong><a href=\"${list_domain}\">${list_domain}</a></strong> will be online shortly!</p>"
+            echo "    <p>&mdash; The Team</p>"
+            echo "    </div>"
+            echo "</article>"
+            echo "</body>"
+            echo "</html>"
+          } >"${maintenance_html}"
+          get_status_message "$?"
+
+          chmod 644 "${maintenance_html}"
+          chown "${set_user}":"${set_user}" "${maintenance_html}"
+
+        fi
+        echo ""
+      done
+      echo -n "Rewriting virtual host config ... (this may take sometimes)"
+      ${DA_CB_BIN} rewrite_confs &>/dev/null
+      get_status_message "$?"
+    fi
+
+  elif [[ "${set_status^^}" == "ONLINE" || "${set_status^^}" == "ON" || "${set_status^^}" == "1" ]]; then
+    local set_status custom_web_httpd custom_web_httpd_backup maintenance_html retval list_user list_user
+    set_status="online"
+    #echo "Set_status Online triggered"
+    # Only use this if set_user and set_domain are not supplied
+    if [[ -z "${set_user}" && -z "${set_domain}" ]]; then
+      #echo "Domain and user are not supplied"
+      while IFS=":" read -r list_domain list_user; do
+        echo "Turning on website ${list_domain} [${list_user}] from maintenance mode ..."
+        list_user="$(echo "${list_user}" | xargs)"
+        # echo "${list_domain}:${list_user}"
+
+        # This is custom web httpd path
+        custom_web_httpd="/usr/local/directadmin/data/users/${list_user}/domains/${list_domain}.cust_httpd"
+        # This is custom web httpd backup path
+        custom_web_httpd_backup="/usr/local/directadmin/data/users/${list_user}/domains/${list_domain}.cust_httpd.backup"
+        # This is a maintenance page
+        maintenance_html="/home/${list_user}/domains/${list_domain}/public_html/maintenance.html"
+        if [ -f "${custom_web_httpd}" ]; then
+          echo "Checking whether custom httpd file ${custom_web_httpd} contains maintenance string ..."
+          grep -wq "#!# Start maintenance mode by" "${custom_web_httpd}"
+          retval=$?
+        else
+          echo "[Skipped] Could not found existing custom httpd file ${custom_web_httpd} with maintenance string. Setting status to 1 ..."
+          retval=1
+        fi
+
+        if [ "${retval}" -eq 0 ]; then
+          if [ -f "${custom_web_httpd_backup}" ]; then
+            echo -n "Found custom httpd backup file ${custom_web_httpd_backup}. Performing restore ..."
+            mv -f "${custom_web_httpd_backup}" "${custom_web_httpd}"
+            get_status_message "$?"
+          else
+            echo -n "No previous httpd backup file found. Writing empty file to ${custom_web_httpd} ..."
+            cat /dev/null >"${custom_web_httpd}"
+            get_status_message "$?"
+
+          fi
+          #echo -n "Removing maintenance page ${maintenance_html} ..."
+          #rm -f "${maintenance_html}"
+        else
+          echo "$(msg yellow)[Skipped] The website ${list_domain} [${list_user}] is not in maintenance mode$(msg end)"
+        fi
+        echo ""
+      done <${DOMAIN_OWNER_FILE}
+      echo -n "Rewriting virtual host config ... (this may take sometimes)"
+      ${DA_CB_BIN} rewrite_confs &>/dev/null
+      get_status_message "$?"
+    else
+      for web_domain in "${list_domains[@]}"; do
+        #echo "Web_DOMAIN is: ${web_domain}"
+        echo "Turning on website ${web_domain} [${set_user}] from maintenance mode ..."
+        # This is custom web httpd path
+        custom_web_httpd="/usr/local/directadmin/data/users/${set_user}/domains/${web_domain}.cust_httpd"
+        # This is custom web httpd backup path
+        custom_web_httpd_backup="/usr/local/directadmin/data/users/${set_user}/domains/${web_domain}.cust_httpd.backup"
+        # This is a maintenance page
+        maintenance_html="/home/${set_user}/domains/${web_domain}/public_html/maintenance.html"
+        if [ -f "${custom_web_httpd}" ]; then
+          echo "Checking whether custom httpd file ${custom_web_httpd} contains maintenance string ..."
+          grep -wq "#!# Start maintenance mode by" "${custom_web_httpd}"
+          retval=$?
+        else
+          echo "[Skipped] Could not found existing custom httpd file ${custom_web_httpd} with maintenance string. Setting status to 1 ..."
+          retval=1
+        fi
+
+        if [ "${retval}" -eq 0 ]; then
+          if [ -f "${custom_web_httpd_backup}" ]; then
+            echo -n "Found custom httpd backup file ${custom_web_httpd_backup}. Performing restore ..."
+            mv -f "${custom_web_httpd_backup}" "${custom_web_httpd}"
+            get_status_message "$?"
+          else
+
+            echo -n "No previous httpd backup file found. Writing empty file to ${custom_web_httpd} ..."
+            cat /dev/null >"${custom_web_httpd}"
+            get_status_message "$?"
+
+          fi
+          #echo -n "Removing maintenance page ${maintenance_html} ..."
+          #rm -f "${maintenance_html}"
+        else
+          echo "$(msg yellow)[Skipped] The website ${web_domain} [${set_user}] is not in maintenance mode$(msg end)"
+        fi
+        echo ""
+      done
+      echo -n "Rewriting virtual host config ... (this may take sometimes)"
+      ${DA_CB_BIN} rewrite_confs &>/dev/null
+      get_status_message "$?"
+    # Other condition won't be running because we have validated before
+    fi
+  fi
+
+
+}
+
+ADMIN_EMAIL="webmaster@sofibox.com"
+SCRIPT_PATH="$(dirname "$(readlink -f "$0")")"
+SCRIPT_NAME=$(basename -- "$0")
+BOX_HOSTNAME=$(hostname)
+MAIL_BIN=$(command -v mail)
+DATE_BIN=$(command -v date)
+
+LOG_PATH="${SCRIPT_PATH}/log"
+CONFIG_PATH="${SCRIPT_PATH}/conf"
+TEMP_PATH="${SCRIPT_PATH}/tmp"
+
+mkdir -p "${LOG_PATH}"
+mkdir -p "${CONFIG_PATH}"
+mkdir -p "${TEMP_PATH}"
+
+# REPORT FILES
+DATE_TIME_NOW="$(date '+%d-%m-%Y_%H-%M-%S')" #31-03-2020_11-56-16
+REPORT_FILE="${LOG_PATH}/${SCRIPT_NAME}-${DATE_TIME_NOW}-report.log"
+cat /dev/null >"${REPORT_FILE}"
+
+# This is the list of users in directadmin
+USER_LIST_PATH="/usr/local/directadmin/data/users"
+# This is all the binary form for directadmin
+DA_BIN="/usr/local/directadmin/directadmin"
+# This is a directadmin custombuild build binary
+DA_CB_BIN="/usr/local/directadmin/custombuild/build"
+# This is a directadmin config file
+DA_CONF="/usr/local/directadmin/conf/directadmin.conf"
+# This is the custombuild config file
+DA_CB_CONF="/usr/local/directadmin/custombuild/options.conf"
+# This is the list of all domains
+DOMAIN_OWNER_FILE="/etc/virtual/domainowners"
+
+#echo "$(msg yellow)[${SCRIPT_NAME}]: Checking required paths ...$(msg end)"
+check_path "${DA_BIN}" "${DA_CB_BIN}" "${DA_CONF}" "${USER_LIST_PATH}" "${DOMAIN_OWNER_FILE}"
+#echo ""
+
+RETVAL=1
+ACTION="$1"
+ARGNUM="$#"
+
+if [ ${ARGNUM} -eq 0 ]; then
+  echo "[${SCRIPT_NAME}]: Error, no argument is supplied. Use [ ${SCRIPT_NAME} --help ] to see the valid options"
+  exit 2
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  # Display help and usage
+  -h | --help | help)
+    usage
+    exit 0
+    ;;
+  -V | --version | version) # Display Program version
+    echo "${_APP_INFO}"
+    echo ""
+    echo "${_APP_SPECIFIC_NAME}-${_APP_VERSION_STATUS}"
+    echo "${_AUTHOR}"
+    exit 0
+    break
+    ;;
+  -t | --test | test)
+    echo "This is a test"
+    exit 0
+    break
+    ;;
+  rmq | remove-mail-q)
+    service exim stop
+    rm -fvr /var/spool/exim/input
+    service exim restart
+    exit 0
+    break
+    ;;
+  edit-file)
+    EDIT_FILE="$2"
+    if [ "${EDIT_FILE}" == "directadmin.conf" ]; then
+      nano -c "${DA_CONF}"
+    elif [ "${EDIT_FILE}" == "options.conf" ]; then
+      nano -c "${DA_CB_CONF}"
+    fi
+    exit 0
+    break
+    ;;
+  edit-daconf)
+    nano -c "${DA_CONF}"
+    exit 0
+    break
+    ;;
+  edit-cbconf)
+    nano -c "${DA_CB_CONF}"
+    exit 0
+    break
+    ;;
+  directadmin | da)
+    SHORT_OPTS="v,d,o:"
+    LONG_OPTS="verbose,debug,output:,debug-level:"
+    OPTIONS=$(getopt -o "${SHORT_OPTS}" --long "${LONG_OPTS}" -n "${SCRIPT_NAME}" -- "$@" 2>&1)
+    RETVAL=$?
+    if [ ${RETVAL} != 0 ]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, ${OPTIONS}$(msg end)"
+      exit 1
+    fi
+    eval set -- "${OPTIONS}"
+    VERBOSE=false
+    DEBUG=false
+    DEBUG_LEVEL="2000"
+    OUTPUT=""
+    while true; do
+      case "$1" in
+      -v | --verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -d | --debug)
+        DEBUG=true
+        shift
+        ;;
+      --debug-level)
+        DEBUG_LEVEL="$2"
+        shift 2
+        ;;
+      -o | --output)
+        OUTPUT="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "[${SCRIPT_NAME}]: Error, invalid option e.g: ${SCRIPT_NAME} ${ACTION}"
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+      esac
+    done
+    _directadmin "$@"
+    break
+    ;;
+  custombuild | build | cb)
+    SHORT_OPTS="v,d"
+    LONG_OPTS="verbose,debug"
+    OPTIONS=$(getopt -o "${SHORT_OPTS}" --long "${LONG_OPTS}" -n "${SCRIPT_NAME}" -- "$@" 2>&1)
+    RETVAL=$?
+    if [ ${RETVAL} != 0 ]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, ${OPTIONS}$(msg end)"
+      exit 1
+    fi
+    eval set -- "${OPTIONS}"
+    VERBOSE=false
+    DEBUG=false
+
+    while true; do
+      case "$1" in
+      -v | --verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -d | --debug)
+        DEBUG=true
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "[${SCRIPT_NAME}]: Error, invalid option e.g: ${SCRIPT_NAME} ${ACTION}"
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+      esac
+    done
+    _custombuild "$@"
+    break
+    ;;
+  apache | ap2)
+    SHORT_OPTS="v,d"
+    LONG_OPTS="verbose,debug"
+    OPTIONS=$(getopt -o "${SHORT_OPTS}" --long "${LONG_OPTS}" -n "${SCRIPT_NAME}" -- "$@" 2>&1)
+    RETVAL=$?
+    if [ ${RETVAL} != 0 ]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, ${OPTIONS}$(msg end)"
+      exit 1
+    fi
+    eval set -- "${OPTIONS}"
+    VERBOSE=false
+    DEBUG=false
+
+    while true; do
+      case "$1" in
+      -v | --verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -d | --debug)
+        DEBUG=true
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "[${SCRIPT_NAME}]: Error, invalid option e.g: ${SCRIPT_NAME} ${ACTION}"
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+      esac
+    done
+    _apache "$@"
+    break
+    ;;
+  set-web-maintenance | maintain-web | manage-web)
+    SHORT_OPTS="v,u:,d:,s:,t:"
+    LONG_OPTS="verbose,user:,set-user:,domain:,set-domain:,status:,set-status:,set-web:,set-web-status:,set-mode:,time:,set-time:"
+    OPTIONS=$(getopt -o "${SHORT_OPTS}" --long "${LONG_OPTS}" -n "${SCRIPT_NAME}" -- "$@" 2>&1)
+    RETVAL=$?
+    if [ ${RETVAL} != 0 ]; then
+      echo "[${SCRIPT_NAME}]: $(msg red)Error, ${OPTIONS}$(msg end)"
+      exit 1
+    fi
+    eval set -- "${OPTIONS}"
+    VERBOSE=false
+    SET_DOMAIN=""
+    SET_STATUS=""
+    SET_TIME=""
+    SET_USER=""
+    while true; do
+      case "$1" in
+      -v | --verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -u | --user | --set-user)
+        SET_USER="$2"
+        shift 2
+        ;;
+      -d | --domain | --set-domain)
+        SET_DOMAIN="$2"
+        shift 2
+        ;;
+      -s | --status | --set-status | --set-mode | --set-web | --set-web-status)
+        SET_STATUS="$2"
+        shift 2
+        ;;
+      -t | --time | --set-time)
+        SET_TIME="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "[${SCRIPT_NAME}]: Error, invalid option e.g: ${SCRIPT_NAME} ${ACTION}"
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+      esac
+    done
+    maintain_web
+    break
+    ;;
+  --)
+    break
+    ;;
+  -*)
+    echo "[${SCRIPT_NAME}]: Invalid action or option $1. Use --help to see the valid options"
+    exit 1
+    ;;
+  *) ;;
+  esac
+  echo "[${SCRIPT_NAME}]: Error, invalid action or option [ $1 ]. Use --help to see the valid actions or options"
+  exit 1
+done
