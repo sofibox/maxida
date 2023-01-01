@@ -854,7 +854,8 @@ DA_CB_CONF="/usr/local/directadmin/custombuild/options.conf"
 DOMAIN_OWNER_FILE="/etc/virtual/domainowners"
 
 #echo "$(msg yellow)[${SCRIPT_NAME}]: Checking required paths ...$(msg end)"
-check_path "${DA_BIN}" "${DA_CB_BIN}" "${DA_CONF}" "${USER_LIST_PATH}" "${DOMAIN_OWNER_FILE}"
+# Optional check for required paths
+# check_path "${DA_BIN}" "${DA_CB_BIN}" "${DA_CONF}" "${USER_LIST_PATH}" "${DOMAIN_OWNER_FILE}"
 #echo ""
 
 RETVAL=1
